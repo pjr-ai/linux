@@ -1,0 +1,85 @@
+Linux 权限管理学习笔记(2026.9.4)
+　　
+
+【第一部分】tar 打包压缩
+
+选项口诀：
+c = 创建压缩包
+z = gzip 压缩（生成.gz）
+v = 显示打包过程
+f = 指定文件名（不能漏，f后紧跟包名）
+
+常用命令：
+打包压缩：tar -zcvf info.tar.gz info.txt
+查看内容：tar -tzvf info.tar.gz
+解压：tar -xzvf info.tar.gz
+
+易错提醒：选项全小写zcvf；f不能丢；f要紧跟包名。
+
+【第二部分】看懂 ls -l 输出
+
+示例：-rw-r--r--. 1 root root 1024 9月 2 10:00 info.txt
+
+解读：
+第1个字符：- 普通文件 / d 目录 / l 软链接
+接着9位是权限，分3组：所有者 / 所属组 / 其他人
+第2个root = 所有者
+第3个root = 所属组
+
+【第三部分】rwx 权限详解
+
+r = read 读；w = write 写；x = execute 执行
+
+对文件：r能查看内容，w能修改内容，x能运行程序
+对目录：r能列出内容，w能新建删除文件，x能进入(cd)
+
+重要：目录没有x就cd不进去；没有r连ls都看不到。
+
+【第四部分】数字法换算
+
+r=4　w=2　x=1
+rwx=7　rw-=6　r-x=5　r--=4　---=0
+
+顺序永远是：所有者 / 所属组 / 其他人
+644 = 所有者rw-，组r--，他人r--（普通文件默认）
+755 = 所有者rwx，组r-x，他人r-x
+
+【第五部分】三大核心命令
+
+一、chown 修改所有者（管"人"）
+只改所有者：chown 新所有者 文件名
+　例：chown tom info.txt
+人和组一起改：chown 人:组 文件名
+　例：chown tom:dev info.txt
+连目录一起改：chown -R tom 目录名
+
+二、chgrp 修改所属组（管"组"）
+chgrp 组名 文件名
+　例：chgrp dev info.txt
+注意：组名在前，文件名在后。
+
+三、chmod 修改权限（数字法）
+chmod 三位数字 文件名
+　例：chmod 755 test.txt
+　例：chmod 644 test.txt
+连目录一起改：chmod -R 755 project/
+改完用 ls -l 验证。
+【第六部分】命令对比速查
+改所有者：chown 人 文件　例：chown tom info.txt
+改所属组：chgrp 组 文件　例：chgrp dev info.txt
+人和组一起改：chown 人:组 文件　例：chown tom:dev info.txt
+改权限：chmod 数字 文件　例：chmod 644 info.txt
+连目录一起改：加 -R　例：chmod -R 755 /home/web
+【第七部分】踩过的坑（重点收藏）
+1. chown里用冒号:分隔人和组，不能用分号;
+2. chmod数字一定是3位
+3. chgrp要写两个参数，组名在前
+4. 报错"没有那个文件或目录"时，先pwd再看ls
+5. 目录名可带/，普通文件名不能带/
+6. tar打包用-zcvf，f不能漏
+
+【第八部分】面试一句话总结
+
+chown管人，chgrp管组，chmod管权限。
+r=4，w=2，x=1。
+权限顺序永远是：所有者、所属组、其他人。
