@@ -1,0 +1,319 @@
+# 磁盘写满排障 · 完整手册（原理+实验+实战）
+
+> 📅 日期：______
+> 🧪 环境：CentOS7 虚拟机
+> 📖 内容：现象 → 原理 → 实验全过程 → 处理方案 → 预防 → 面试答案
+> ⚠️ 本手册实验部分使用 tmpfs（内存盘）模拟，安全可反复练
+
+---
+
+# 第一部分：原理篇
+
+## 1. 现象（怎么发现磁盘满了）
+
+- 程序报错：`No space left on device`（设备上没有空间）
+- 服务无法写日志、无法创建文件
+- 数据库写入失败、系统卡顿
+- `df -h` 显示某分区 Use% 达到 100%
+
+## 2. 两种"满"（面试必考）
+
+| 类型 | 查法 | 原因 |
+|---|---|---|
+| 空间满 | `df -h` 显示 100% | 数据占满了容量 |
+| **inode满** | `df -i` 显示 IUse% 100% | **小文件太多，把"文件名额"用完** |
+
+> ⚠️ 如果 df -h 还有空间但写不进去，必须查 df -i 排除 inode 耗尽！
+
+## 3. 排障核心思路（四步）
+
+> **df 定位哪个分区满 → du 定位哪个目录大 → find 定位哪个文件大 → lsof 处理"删了没释放"**
+
+## 4. 核心原理：删文件 ≠ 空间释放（重点！）
+
+**Linux 文件有两个"名字"：**
+1. 目录里的**文件名**（你 ls 看到的）
+2. **进程手中的引用**（进程打开文件后一直握着）
+
+`rm` 只是**去掉了目录里的名字**。只要还有进程握着这个文件，**数据块就不会被回收，空间一直占着**！
+
+**破案工具**：`lsof | grep deleted`（找出被删但还占用的文件及其进程）
+
+---
+
+# 第二部分：实验篇（亲手复现）
+
+## 实验准备：建立"实验盘"（安全，不动真实系统盘）
+
+```bash
+mkdir -p /mnt/lab
+mount -t tmpfs -o size=100M tmpfs /mnt/lab
+df -h | grep lab
+```
+
+**预期结果：**
+```
+tmpfs  100M  0  100M  0%  /mnt/lab
+```
+✅ 一块 100M 的"实验磁盘"挂好了（tmpfs 是内存盘，不碰硬盘，随便造）
+
+---
+
+## 实验一：制造写满 → 定位 → 清理
+
+### 步骤1：写入数据把盘写满
+
+```bash
+# ① 写一个 80M 的大文件
+dd if=/dev/zero of=/mnt/lab/bigfile.bin bs=1M count=80
+
+# ② 看使用率
+df -h | grep lab
+```
+```
+tmpfs  100M  80M  21M  80%  /mnt/lab
+```
+
+```bash
+# ③ 故意写超（再写50M，但只剩21M空间）
+dd if=/dev/zero of=/mnt/lab/fill.bin bs=1M count=50
+```
+
+**预期结果（故障出现！）：**
+```
+dd: 写入'/mnt/lab/fill.bin'出错: 设备上没有空间
+```
+⚠️ 这就是磁盘满时的典型报错！
+
+### 步骤2：重现业务方的感受
+
+```bash
+echo "hello" > /mnt/lab/hello.txt
+```
+**预期结果：**
+```
+-bash: /mnt/lab/hello.txt: 设备上没有空间
+```
+✅ 连写个几字节的小文件都失败了
+
+### 步骤3：排障定位三连（重点！）
+
+**第1查 df —— 哪个分区满了？**
+```bash
+df -h | grep lab
+```
+```
+tmpfs  100M  100M  0  100%  /mnt/lab
+```
+✅ 锁定：/mnt/lab 使用率 100%
+
+**第2查 du —— 哪个目录大？**
+```bash
+du -sh /mnt/lab/*
+```
+```
+81M  /mnt/lab/bigfile.bin
+20M  /mnt/lab/fill.bin
+```
+✅ 锁定两个大文件
+
+**第3查 find —— 找大文件（正式环境用）**
+```bash
+find /mnt/lab -size +10M -exec ls -lh {} \;
+```
+✅ 大文件现形
+
+> **真实环境三连：df -h 定分区 → du -sh * 定目录 → find -size +100M 定文件**
+
+### 步骤4：清理并验证
+
+```bash
+# 方式1：直接删除
+rm -f /mnt/lab/fill.bin
+
+# 方式2（推荐）：清空文件，保留本体（清日志的正确姿势）
+echo "" > /mnt/lab/bigfile.bin
+
+# 验证空间释放
+df -h | grep lab
+echo "hello" > /mnt/lab/hello.txt && cat /mnt/lab/hello.txt
+```
+```
+tmpfs  100M  0  100M  0%  /mnt/lab
+hello
+```
+✅ 空间释放，恢复正常
+
+**两种清理方式对比（面试爱问）：**
+| 方式 | 效果 | 场景 |
+|---|---|---|
+| `echo "" > 文件` | 清空内容，文件保留（进程引用不断）| **清日志推荐** |
+| `rm 文件` | 删除文件 | 确认不要了 |
+
+---
+
+## 实验二：经典坑——删了文件空间不释放！🕵️
+
+**面试最高频的排障场景，亲手复现：**
+
+### 步骤1：造一个大文件
+
+```bash
+dd if=/dev/zero of=/mnt/lab/ghost.log bs=1M count=50
+df -h | grep lab      # 记下使用率（约50%）
+```
+
+### 步骤2：让一个进程"占着"它
+
+```bash
+tail -f /mnt/lab/ghost.log &
+```
+输出 `[1] 12345` → 记下这个 PID（你的可能不同）
+
+### 步骤3：现在删除文件
+
+```bash
+rm -f /mnt/lab/ghost.log
+ls /mnt/lab
+df -h | grep lab
+```
+
+**见证奇迹：**
+```
+# ls 看不到 ghost.log 了
+# 但 df 一看——空间没释放！
+tmpfs  100M  50M  51M  50%  /mnt/lab     ← 空间没回来！
+```
+
+⚠️ **文件"删了"，空间居然不释放！**
+
+### 步骤4：用 lsof 破案
+
+```bash
+lsof | grep deleted
+```
+**关键证据：**
+```
+tail  12345  root  3r  REG  ...  /mnt/lab/ghost.log (deleted)
+```
+✅ 破案：`tail` 进程还占着这个已删除(deleted)的文件！
+
+**原理**：rm 只去掉了目录名字，进程手里的引用还在，数据块不回收。
+
+### 步骤5：杀掉进程，空间立刻释放
+
+```bash
+kill -9 12345          # （或用 jobs/kill %1）
+df -h | grep lab
+```
+```
+tmpfs  100M  0  100M  0%  /mnt/lab     ← 空间回来了！
+```
+✅ 实验二完成——亲手验证了"rm ≠ 释放空间"
+
+---
+
+## 实验三（选做）：inode 排查
+
+```bash
+df -i | grep lab          # 看 inode 使用情况
+```
+- `df -h` 有空间但 `df -i` 100% → inode 耗尽（小文件太多）
+- 排查小文件多的目录：
+```bash
+find /var/log -type f | wc -l    # 统计文件个数
+```
+
+---
+
+## 实验收尾：清理实验环境
+
+```bash
+umount /mnt/lab       # 卸载（tmpfs一卸，内容全消失）
+rmdir /mnt/lab
+df -h | grep lab      # 确认已无输出
+```
+
+---
+
+# 第三部分：实战处理方案
+
+## 按场景选处理方式
+
+| 场景 | 处理方式 |
+|---|---|
+| 日志太大 | `echo "" > 日志文件`（推荐）或删归档日志 |
+| 删了没释放 | `lsof \| grep deleted` 找进程 → 重启/杀掉它 |
+| inode 满 | 找小文件多的目录清理 |
+| 临时文件堆积 | 清理 /tmp 等 |
+| 业务增长太快 | 扩容磁盘 / 挂新盘 |
+
+## ⚠️ 清日志的正确姿势
+
+```bash
+echo "" > /var/log/xxx.log       # ✅ 清空内容，保留文件（进程引用不断）
+rm /var/log/xxx.log              # ❌ 空间可能不释放（进程还占着）
+```
+
+---
+
+# 第四部分：预防措施
+
+```bash
+# 1. 日志轮转（自动切割+清理）—— logrotate
+vim /etc/logrotate.conf
+
+# 2. 定时清理旧日志 —— crontab
+0 2 * * * find /var/log -name "*.log" -mtime +7 -delete
+
+# 3. 磁盘监控告警
+*/10 * * * * df -h | grep -E '9[0-9]%|100%' && echo "磁盘告警" >> /tmp/alert.log
+```
+
+---
+
+# 第五部分：面试标准答案（背这段）
+
+> **磁盘满排障步骤：**
+> 1. `df -h` 定位哪个分区满（顺手 `df -i` 排除 inode 问题）
+> 2. `du -sh /*` 逐层定位大目录
+> 3. `find / -size +100M` 找出大文件
+> 4. 若"删了文件空间没释放"：`lsof | grep deleted` 找占用进程，杀掉/重启释放
+> 5. 清理：清日志用 `echo "" > 文件`（不要直接 rm 正在被写的日志）
+> 6. 预防：logrotate 轮转 + crontab 定时清理 + 监控告警
+
+---
+
+# 附录：命令速查卡
+
+```bash
+df -h                          # 看分区使用率（定位哪个盘满）
+df -i                          # 看inode使用（排除inode耗尽）
+du -sh 目录/*                   # 看目录内各项大小（定位大目录）
+du -h --max-depth=1 / | sort -rh | head -10   # 前10大目录
+find / -size +100M 2>/dev/null  # 找大文件（定位大文件）
+lsof | grep deleted            # 找"删了没释放"的文件 ★核心
+lsof /mnt/lab                  # 看谁在占用某目录
+echo "" > 日志文件              # 安全清空日志
+kill -9 PID                    # 杀掉占用进程
+fuser -m /mnt/lab              # 另一种查占用（备选）
+```
+
+---
+
+# 附录：易错点总结
+
+| # | 易错点 | 正确 |
+|---|---|---|
+| 1 | 只查 df -h | 还要 df -i 排除 inode 问题 |
+| 2 | 删了文件以为空间回来了 | 有进程占用就不释放，lsof 排查 |
+| 3 | 直接 rm 正在写的日志 | 用 `echo "" > 文件` 清空 |
+| 4 | du 和 df 混 | df 看分区、du 看目录 |
+| 5 | 忘了 max-depth | du 默认递归全算，用 --max-depth=1 |
+| 6 | 杀进程用错 | kill 温柔、kill -9 强杀 |
+
+---
+
+## 📌 一句话总结
+
+> **df 定分区 → du 定目录 → find 定文件 → lsof 处理"删了没释放" → echo 清日志 → 复盘预防。**
