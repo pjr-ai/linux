@@ -1,0 +1,13 @@
+{
+  "folders": [
+    { "path": "计划书" },
+    { "path": "日志" },
+    { "path": "M1-基础" },
+    { "path": "学习笔记" },
+    { "path": "M0-定位" }
+  ],
+  "settings": {
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true
+  }
+}
