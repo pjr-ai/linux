@@ -1,0 +1,66 @@
+# —— 系统识别 ——
+cat /etc/os-release; hostnamectl; uname -a
+
+# —— 网络 ——
+ip -br a                        # 看 IP
+hostname -I                     # 只要 IPv4
+ip route                        # 看网关 ← 出网问题先看这个
+nmcli device status             # 设备名
+nmcli connection show           # 连接名
+nmcli con show ens160 | grep ipv4.
+nmcli con mod ens160 ipv4.dns "223.5.5.5,8.8.8.8"
+nmcli con up ens160             # 生效（SSH 安全）
+getent hosts 域名               # 验收 DNS ← 最佳
+ping -c2 223.5.5.5              # 验收路由
+
+# —— 包管理 ——
+dnf repolist; dnf makecache; dnf clean all
+dnf install -y <包>; dnf provides */<命令>
+rpm -qa | sort
+
+# —— 服务与日志 ——
+systemctl status/enable/start/restart <svc>
+systemctl --failed
+journalctl -u <svc> -f
+tail -f /var/log/secure         # 认证日志 ← 登录问题看这个
+
+# —— 安全 ——
+getenforce; sestatus
+sudo ausearch -m AVC -ts recent
+firewall-cmd --list-all
+ls -lZ /etc/shadow              # SELinux 上下文
+
+# —— 权限 ——
+id; groups; sudo -l
+passwd -S <user>                # L/P/NP
+usermod -aG wheel p
+faillock --user p; faillock --user p --reset
+
+# —— 存储 ——
+lsblk; df -h; vgs; lvs
+lvextend -L +5G /dev/mapper/rl-var && xfs_growfs /var
+
+
+
+| # | 坑 | 真因 | 正解 |
+|---|---|---|---|
+| 1 | `sudo: apt: 找不到命令` | CentOS 用 yum/dnf | 先 `cat /etc/os-release` 认系统 |
+| 2 | 官方仓库 404 / 解析不了 | CentOS 7 EOL 迁 vault | 改 `baseurl` 指向 vault [<sup data-citation='16'>16</sup>](https://gcore.de/en/help/linux/centos7-new-repo-url-after-eol.php) |
+| 3 | 清华 `/rocky/` 404 | 镜像路径变更 | 换 USTC / 阿里云 [<sup data-citation='5'>5</sup>](https://mirrors.tuna.tsinghua.edu.cn/rocky/9/isos/x86_64/) |
+| 4 | 阿里云 iso 只有 28 字节 | 是符号链接 | 下带版本号的实体文件 [<sup data-citation='4'>4</sup>](https://mirrors.aliyun.com/rockylinux/9/isos/x86_64/) |
+| 5 | 下载慢 | 官方源 + 单线程 | 国内镜像 + `aria2c -x16` 多源 |
+| 6 | `su -` 一直 Authentication failure | **su 要 root 密码**；且 root 可能锁定 | 用 `sudo`；`sudo passwd -S root` 看状态 |
+| 7 | `sudo -i` 也不行 | 安装时没勾 "Make this user administrator" | rd.break 里 `usermod -aG wheel p` |
+| 8 | 按 Esc 掉进 `grub>` | 狂按 Esc 会进 GRUB 命令行 | 敲 `normal` 回去；用 `↑↓` 停倒计时 |
+| 9 | 密码改对了还是登不上 | **漏了 `touch /.autorelabel`** | 重走一遍补上 [<sup data-citation='11'>11</sup>](https://www.redhat.com/en/blog/recover-root-passwd) |
+| 10 | 重启卡十几分钟 | SELinux 全盘重打标签，正常 | **耐心等，绝不强制关机** [<sup data-citation='11'>11</sup>](https://www.redhat.com/en/blog/recover-root-passwd) |
+| 11 | `vim: 未找到命令` | Minimal 不带 vim | `dnf install vim-enhanced` |
+| 12 | `dnf` 报 `Couldn't resolve host` | **先怀疑 DNS** | `nmcli con mod X ipv4.dns` [<sup data-citation='14'>14</sup>](https://www.golinuxcloud.com/could-not-resolve-host-mirrors-rockylinux-org/) |
+| 13 | 改了 DNS 依然不通 | **真因是网关填成了 `192.168.230.0`（网络地址）** | 改成真实网关 `.1`，检查掩码 |
+| 14 | `不允许的设置 "upv4"` | typo | `ipv4` 拼对 |
+| 15 | `DNS server address is invalid` | 两个 DNS 之间空格丢失 | **用逗号** `"223.5.5.5,8.8.8.8"` |
+| 16 | `未找到设备 "ens33"` | 网卡实际叫 `ens160` | `nmcli device status` 查真名 |
+| 17 | 一改网络 SSH 就断 | 用了 `con down/up` | 用 `nmcli con up` 或 restart NM |
+| 18 | 重启后 DNS 又没了 | 手改了 `/etc/resolv.conf` | **必须用 nmcli 配** [<sup data-citation='14'>14</sup>](https://www.golinuxcloud.com/could-not-resolve-host-mirrors-rockylinux-org/) |
+| 19 | 克隆机 IP/主机名冲突 | machine-id、host key 没清 | `truncate -s 0 /etc/machine-id` + 删 ssh host key |
+| 20 | 关机提示未装 VMware Tools | 缺 open-vm-tools | `dnf install -y open-vm-tools` |
